@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self'">
+<title>A/B Crossfade Player</title>
+<style>
+@font-face{font-family:"Inter";src:url(fonts/inter-latin-wght-normal.woff2) format("woff2");font-weight:100 900;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Inter";src:url(fonts/inter-latin-ext-wght-normal.woff2) format("woff2");font-weight:100 900;unicode-range:U+0100-02AF,U+0304,U+0308,U+0329,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+[hidden]{display:none!important}
+</style>
+<style>
+/* Layout: ein zentrierter Streifen auf Schwarz. Bild, darunter die Zeitleiste mit beiden Wellenformen, darunter der Crossfader zwischen den zwei Spuren. Tiefe nur über Helligkeit, Farbe nur auf dem, was gerade zu hören ist. */
+:root{
+  --ground:#000; --surface:#111; --raised:#2a2a2a; --control:#444;
+  --text:#fff; --muted:#b4b4b4; --faint:#949494;
+  --accent:#f2b33d;            /* VU-Bernstein: was du gerade hörst */
+  --negative:#e5566f;
+  --pill-bg:#2b2414;
+  --radius:20px; --gap:14px;
+  --font:"Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{background:var(--ground);color:var(--text)}
+body{font-family:var(--font);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased;
+  padding-left:max(16px, env(safe-area-inset-left,0px));padding-right:max(16px, env(safe-area-inset-right,0px));padding-block:0 40px}
+button,input,select{font:inherit;color:inherit}
+.num{font-variant-numeric:tabular-nums}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+.col{max-width:1120px;margin:0 auto}
+
+/* Kopfzeile */
+.bar{height:56px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px;letter-spacing:-.01em}
+.brand svg{display:block}
+.pill{height:36px;padding:0 16px;border-radius:999px;border:0;cursor:pointer;font-weight:500;font-size:14px;
+  display:inline-flex;align-items:center;gap:8px;transition:background-color .15s, transform .1s}
+.pill.primary{background:var(--text);color:#000}
+.pill.primary:hover{background:#e6e6e6}
+.pill.ghost{background:var(--raised);color:var(--text)}
+.pill.ghost:hover{background:#363636}
+.pill:active{transform:scale(.97)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Titelzeile */
+.title{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:8px 0 16px}
+.title > div{min-width:0}
+h1{font-size:20px;font-weight:600;letter-spacing:-.01em;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.finding{margin:2px 0 0;color:var(--muted)}
+.finding b{color:var(--text);font-weight:500}
+
+/* Bild */
+.stage{position:relative;background:var(--surface);border-radius:var(--radius);overflow:hidden;aspect-ratio:16/9;max-width:100%}
+.stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;cursor:pointer}
+.stage:fullscreen{border-radius:0;aspect-ratio:auto}
+.empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center;padding:24px;cursor:pointer}
+.empty p{margin:0;color:var(--muted);font-size:15px}
+.empty strong{display:block;color:var(--text);font-size:16px;font-weight:600;margin-bottom:4px}
+.corner{position:absolute;top:14px;z-index:3;height:30px;padding:0 12px;border-radius:999px;border:0;background:rgba(0,0,0,.62);color:#fff;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;cursor:pointer;transition:opacity .15s, background-color .15s}
+.corner:hover{background:rgba(0,0,0,.85)}
+.corner.a{left:14px}.corner.b{right:14px}.corner.v{left:50%;transform:translateX(-50%)}
+.corner.has{opacity:0}
+.stage:hover .corner.has,.corner.has:focus-visible{opacity:1}
+@media (hover:none){.corner.has{opacity:1}}
+.split{position:absolute;inset:0;z-index:4;display:grid;grid-template-columns:1fr 1fr;background:rgba(0,0,0,.78);pointer-events:none}
+.half{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;transition:background-color .1s}
+.half + .half{box-shadow:inset 1px 0 0 #2a2a2a}
+.half span{font-size:72px;font-weight:600;line-height:1;letter-spacing:-.03em;color:#555}
+.half small{font-size:13px;color:var(--faint);max-width:80%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.half.on{background:rgba(242,179,61,.10)}
+.half.on span{color:var(--accent)}
+.half.on small{color:#fff}
+.vmsg{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;padding:24px;pointer-events:none}
+.vmsg p{margin:0;max-width:44ch;padding:14px 18px;border-radius:12px;background:rgba(0,0,0,.78);color:#fff;font-size:14px;line-height:1.5;text-align:center}
+.vmsg p b{color:var(--accent);font-weight:600}
+.vid-only{display:none}
+.split.vid{grid-template-columns:1fr}
+.split.vid #halfA,.split.vid #halfB{display:none}
+.split.vid .vid-only{display:flex}
+.stage:has(.split:not([hidden])) .empty{visibility:hidden}
+.split-hint{position:absolute;left:0;right:0;bottom:14px;margin:0;text-align:center;font-size:12px;color:var(--faint)}
+
+/* Bedienleiste im Bild, unten, über einem neutralen Abdunkler */
+.controls{position:absolute;left:0;right:0;bottom:0;z-index:3;display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;align-items:center;gap:12px;
+  padding:40px 16px 14px;background:linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,0));transition:opacity .25s}
+.stage.idle .controls,.stage.idle .corner{opacity:0;pointer-events:none}
+.stage.idle{cursor:none}
+.play{width:30px;height:30px;border-radius:50%;border:0;background:rgba(255,255,255,.14);color:#fff;display:grid;place-items:center;cursor:pointer;transition:transform .1s, background-color .15s}
+.play .i-pause{display:none}
+.play.playing .i-play{display:none}
+.play.playing .i-pause{display:block}
+.play:hover{background:rgba(255,255,255,.26)} .play:active{transform:scale(.92)}
+.tc{font-size:12px;color:#fff;min-width:9.5ch}
+.tc.dur{color:rgba(255,255,255,.6);text-align:right}
+.wave{position:relative;height:24px;cursor:pointer;touch-action:none}
+.prog{position:absolute;left:0;right:0;top:50%;height:3px;margin-top:-1.5px;border-radius:2px;background:rgba(255,255,255,.25);transition:height .12s, margin-top .12s}
+.wave:hover .prog{height:5px;margin-top:-2.5px}
+.prog i{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:2px;background:#fff}
+.prog b{position:absolute;top:50%;left:0;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#fff;opacity:0;transition:opacity .15s}
+.wave:hover .prog b,.wave:focus-visible .prog b{opacity:1}
+.wave:focus-visible{outline:none}
+.wave:focus-visible .prog{outline:2px solid var(--accent);outline-offset:6px}
+.icon-btn{width:34px;height:34px;border-radius:50%;border:0;background:transparent;color:#fff;display:grid;place-items:center;cursor:pointer}
+.icon-btn:hover{background:rgba(255,255,255,.12)}
+
+/* Mischpult: Dateien oben, darunter der Crossfader über die ganze Breite, A und B an seinen Enden */
+.mix{display:grid;gap:10px;padding:14px 0 24px}
+.tracks{display:none;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}
+.mix.show-info .tracks{display:grid}
+.track .name-row{display:none}
+.track{display:grid;gap:4px;min-width:0;align-content:start;border-radius:12px;padding:6px 8px;margin:-6px -8px;transition:background-color .15s}
+.track.b{text-align:right}
+.name-row{display:flex;align-items:center;gap:8px;min-width:0}
+.track.b .name-row{justify-content:flex-end}
+.load{flex:none;height:26px;padding:0 10px;border-radius:999px;border:0;background:var(--surface);color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;transition:background-color .15s, color .15s}
+.load:hover{background:var(--raised);color:var(--text)}
+.track .name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.track .lufs{font-size:12px;color:var(--faint);min-height:1.45em}
+.track .lufs .adj{color:var(--accent)}
+.warn{display:inline-block;margin-top:2px;font-size:12px;color:var(--accent);background:var(--pill-bg);border-radius:999px;padding:1px 8px;justify-self:start}
+.track.b .warn{justify-self:end}
+
+.fader-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:14px}
+.letter{font-size:15px;font-weight:600;line-height:1;letter-spacing:-.01em;color:var(--control);transition:color .12s, transform .1s;
+  background:none;border:0;padding:6px 4px;margin:0;cursor:pointer;border-radius:6px;min-width:1ch}
+.letter:hover{color:#fff!important}
+.letter:active{transform:scale(.94)}
+.xf{position:relative;height:26px}
+.xf::before{content:"";position:absolute;left:0;right:0;top:50%;height:2px;margin-top:-1px;border-radius:1px;background:var(--raised)}
+#xf{position:absolute;inset:0;width:100%;height:100%;margin:0;background:transparent;-webkit-appearance:none;appearance:none;cursor:ew-resize;z-index:1}
+#xf::-webkit-slider-runnable-track{height:26px;background:transparent}
+#xf::-moz-range-track{height:26px;background:transparent}
+#xf::-webkit-slider-thumb{-webkit-appearance:none;width:3px;height:18px;margin-top:4px;border-radius:2px;background:var(--accent);cursor:grab;box-shadow:0 0 0 6px transparent}
+#xf::-moz-range-thumb{width:3px;height:18px;border:0;border-radius:2px;background:var(--accent);cursor:grab}
+#xf:active::-webkit-slider-thumb{cursor:grabbing}
+#xf:focus-visible{outline:none}
+#xf:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 2px #000, 0 0 0 4px #fff}
+
+/* Zwei Schalter mittig: aktiv = hell mit Bernstein-Punkt */
+.toggles{display:flex;align-items:center;gap:6px}
+.chip{height:32px;padding:0 14px 0 12px;border-radius:999px;border:0;background:transparent;color:var(--faint);font-size:13px;font-weight:500;
+  display:inline-flex;align-items:center;gap:8px;cursor:pointer;transition:background-color .15s, color .15s}
+.chip::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--control);transition:background-color .15s}
+.chip:hover{color:var(--text)}
+.chip[aria-pressed="true"]{background:var(--surface);color:var(--text)}
+.chip[aria-pressed="true"]::before{background:var(--accent)}
+.chip.busy::before{animation:pulse .8s ease-in-out infinite alternate}
+@keyframes pulse{from{opacity:1}to{opacity:.25}}
+.chip.unsure::before{background:var(--control)!important}
+.chip.share::before{display:none}
+.chip.share{color:var(--text);background:var(--surface)}
+.chip.share:hover{background:var(--raised)}
+.chip.share[disabled]{cursor:default;color:var(--muted)}
+.sharebox{display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:8px 8px 8px 14px;border-radius:999px;background:var(--surface)}
+.sharebox-label{color:var(--faint);font-size:12px;white-space:nowrap}
+.sharebox input{flex:1;min-width:0;height:30px;border:0;border-radius:999px;padding:0 12px;background:#000;color:var(--text);font:inherit;font-size:13px}
+.sharebox .icon-btn.small{width:30px;height:30px;color:var(--muted)}
+.stage.shared .corner,.stage.client .corner{display:none}
+@media (max-width:560px){.sharebox-label{display:none}}
+@media (max-width:420px){.chip .long{display:none}.chip{padding:0 9px 0 8px;font-size:12px;gap:6px}.toggles{gap:2px}.brand{font-size:14px}.track .lufs{font-size:11px}}
+
+@media (max-width:760px){
+  .controls{gap:8px;padding:28px 10px 8px;grid-template-columns:auto minmax(0,1fr) auto}
+  .controls .tc{display:none}
+  .tracks{gap:16px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+</head><body>
+<div class="col">
+  <header class="bar">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><circle cx="9" cy="13" r="8" fill="#fff"/><circle cx="17" cy="13" r="8" fill="none" stroke="#f2b33d" stroke-width="2.4"/></svg>
+      Crossfade
+    </div>
+    <input class="sr" type="file" id="fileAll" accept="video/*,audio/*" multiple tabindex="-1">
+    <div class="toggles">
+      <button class="chip" id="match" type="button" aria-pressed="true"><span>Lautheit<span class="long"> angleichen</span></span></button>
+      <button class="chip" id="sync" type="button" aria-pressed="true"><span id="syncTxt">Synchron</span></button>
+      <button class="chip" id="info" type="button" aria-pressed="false">Info</button>
+      <button class="chip share" id="share" type="button" hidden><svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5 9.5 6.5M7 4.5l1.6-1.6a2.8 2.8 0 0 1 4 4L11 8.5M9 11.5l-1.6 1.6a2.8 2.8 0 0 1-4-4L5 7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span id="shareTxt">Teilen</span></button>
+      <p class="sr" id="syncMsg" aria-live="polite"></p>
+    </div>
+  </header>
+  <div class="sharebox" id="sharebox" hidden>
+    <span class="sharebox-label">Link zu diesem Projekt</span>
+    <input id="shareUrl" type="text" readonly aria-label="Link zu diesem Projekt">
+    <button class="chip share" id="copyShare" type="button">Kopieren</button>
+    <button class="icon-btn small" id="closeShare" type="button" aria-label="Schliessen"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+  </div>
+
+  <div class="title sr">
+    <div>
+      <h1 id="title">A/B Crossfade Player</h1>
+      <p class="finding" id="finding">Ein Video und zwei Tonspuren laden, dann während der Wiedergabe zwischen A und B blenden.</p>
+    </div>
+  </div>
+
+  <div class="stage" id="stage">
+    <video id="vid" playsinline muted hidden></video>
+    <div class="empty" id="empty" role="button" tabindex="0" aria-label="Video und Tonspuren laden">
+      <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><rect x="4" y="9" width="32" height="22" rx="5" fill="none" stroke="#949494" stroke-width="2"/><path d="M17 15.5v9l7.5-4.5z" fill="#949494"/></svg>
+      <p>Dateien hierher ziehen</p>
+    </div>
+    <button class="corner a" id="loadA" type="button"><svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 11V2.5M4.5 6 8 2.5 11.5 6M2.5 10.5v3h11v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="loadTxtA">A laden</span></button>
+    <button class="corner v" id="loadV" type="button"><svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 11V2.5M4.5 6 8 2.5 11.5 6M2.5 10.5v3h11v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="loadTxtV">Video laden</span></button>
+    <input class="sr" type="file" id="fileV" accept="video/*,.mxf,.mts,.m2ts,.avi,.mkv" tabindex="-1">
+    <button class="corner b" id="loadB" type="button"><svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 11V2.5M4.5 6 8 2.5 11.5 6M2.5 10.5v3h11v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="loadTxtB">B laden</span></button>
+    <div class="controls" id="controls" hidden>
+      <button class="play" id="play" type="button" aria-label="Abspielen">
+        <svg class="i-play" width="14" height="14" viewBox="0 0 18 18" aria-hidden="true"><path d="M5.5 3.2v11.6L15 9z" fill="currentColor"/></svg>
+        <svg class="i-pause" width="14" height="14" viewBox="0 0 18 18" aria-hidden="true"><path d="M4.5 3h3v12h-3zM10.5 3h3v12h-3z" fill="currentColor"/></svg>
+      </button>
+      <span class="tc num" id="tc">00:00:00.00</span>
+      <div class="wave" id="wave" role="slider" tabindex="0" aria-label="Position" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+        <div class="prog"><i id="progFill"></i><b id="progDot"></b></div>
+      </div>
+      <span class="tc dur num" id="dur">00:00:00.00</span>
+      <button class="icon-btn" id="fs" type="button" aria-label="Vollbild">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2.5 6.5v-4h4M11.5 2.5h4v4M15.5 11.5v4h-4M6.5 15.5h-4v-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <div class="vmsg" id="vmsg" hidden><p id="vmsgTxt"></p></div>
+    <div class="split" id="split" hidden>
+      <div class="half" id="halfA"><span>A</span><small id="halfTxtA"></small></div>
+      <div class="half" id="halfB"><span>B</span><small id="halfTxtB"></small></div>
+      <div class="half on vid-only"><span>Video</span></div>
+    </div>
+  </div>
+
+  <section class="mix" aria-label="Crossfader">
+    <div class="fader-row">
+      <button class="letter" id="letA" type="button" aria-label="Zu A blenden">A</button>
+      <div class="xf"><input type="range" id="xf" min="0" max="1000" value="0" aria-label="Crossfader von A nach B" aria-valuetext="A 100 Prozent"></div>
+      <button class="letter" id="letB" type="button" aria-label="Zu B blenden">B</button>
+    </div>
+    <div class="tracks">
+      <div class="track a" id="trackA">
+        <div class="name-row"><span class="name" id="nameA" hidden></span></div>
+        <div class="lufs num" id="lufsA"></div>
+        <span class="warn" id="wA" hidden></span>
+        <input class="sr" type="file" id="fileA" accept="audio/*,video/*" tabindex="-1">
+      </div>
+      <div class="track b" id="trackB">
+        <div class="name-row"><span class="name" id="nameB" hidden></span></div>
+        <div class="lufs num" id="lufsB"></div>
+        <span class="warn" id="wB" hidden></span>
+        <input class="sr" type="file" id="fileB" accept="audio/*,video/*" tabindex="-1">
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const vid = $('vid'), stage = $('stage');
+  let ctx = null, master = null;
+  const T = {
+    A:{buf:null,trim:null,gain:null,an:null,src:null,name:'',lufs:null,peaks:null,peaksDur:0},
+    B:{buf:null,trim:null,gain:null,an:null,src:null,name:'',lufs:null,peaks:null,peaksDur:0}
+  };
+  let x = 0, fadeAnim = null, anchor = null;
+  const FADE = 0.3; // kurze, klickfreie Blende beim Umschalten per Klick oder Taste
+
+  // ---------- Audio-Graph
+  function getCtx(){
+    if (ctx) return ctx;
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    master = ctx.createGain(); outGain = ctx.createGain(); master.connect(outGain); outGain.connect(ctx.destination);
+    for (const k of ['A','B']){
+      const t = T[k];
+      t.trim = ctx.createGain(); t.gain = ctx.createGain();
+      t.trim.connect(t.gain); t.gain.connect(master);
+    }
+    applyGains(true); applyTrims();
+    return ctx;
+  }
+
+  // ---------- Lautheit nach ITU-R BS.1770 / EBU R128 (integriert, mit Gating)
+  function biquad(data, b0,b1,b2,a1,a2){
+    const out = new Float32Array(data.length);
+    let x1=0,x2=0,y1=0,y2=0;
+    for (let i=0;i<data.length;i++){
+      const x0 = data[i];
+      const y0 = b0*x0 + b1*x1 + b2*x2 - a1*y1 - a2*y2;
+      out[i]=y0; x2=x1; x1=x0; y2=y1; y1=y0;
+    }
+    return out;
+  }
+  function kWeight(data, fs){
+    // Stufe 1: High-Shelf (Kopf-Effekt)
+    let f0=1681.974450955533, G=3.999843853973347, Q=0.7071752369554196;
+    let K=Math.tan(Math.PI*f0/fs), Vh=Math.pow(10,G/20), Vb=Math.pow(Vh,0.4996667741545416);
+    let a0=1+K/Q+K*K;
+    const s1 = biquad(data,(Vh+Vb*K/Q+K*K)/a0, 2*(K*K-Vh)/a0, (Vh-Vb*K/Q+K*K)/a0, 2*(K*K-1)/a0, (1-K/Q+K*K)/a0);
+    // Stufe 2: Hochpass (RLB)
+    f0=38.13547087602444; Q=0.5003270373238773; K=Math.tan(Math.PI*f0/fs);
+    a0=1+K/Q+K*K;
+    return biquad(s1, 1, -2, 1, 2*(K*K-1)/a0, (1-K/Q+K*K)/a0);
+  }
+  function peakDb(buf){
+    let pk = 0;
+    for (let c=0;c<buf.numberOfChannels;c++){ const d = buf.getChannelData(c); for (let i=0;i<d.length;i++){ const a = d[i] < 0 ? -d[i] : d[i]; if (a > pk) pk = a; } }
+    return pk > 0 ? 20*Math.log10(pk) : -Infinity;
+  }
+  function integratedLoudness(buf){
+    const fs = buf.sampleRate, seg = Math.round(fs*0.1);  // 100-ms-Abschnitte, Blöcke = 4 Abschnitte (400 ms, 75 % Überlappung)
+    const nSeg = Math.floor(buf.length/seg);
+    if (nSeg < 4) return null;
+    const segSum = new Float64Array(nSeg);
+    const nch = buf.numberOfChannels;
+    for (let c=0;c<nch;c++){
+      const w = (nch===6 && (c===4||c===5)) ? 1.41 : (nch===6 && c===3 ? 0 : 1); // 5.1: LFE ignorieren, Surrounds +1.5 dB
+      if (!w) continue;
+      const y = kWeight(buf.getChannelData(c), fs);
+      for (let s=0;s<nSeg;s++){
+        let acc=0; const o=s*seg;
+        for (let i=0;i<seg;i++){ const v=y[o+i]; acc+=v*v; }
+        segSum[s]+=w*acc;
+      }
+    }
+    const blocks = [];
+    for (let s=0;s+3<nSeg;s++) blocks.push((segSum[s]+segSum[s+1]+segSum[s+2]+segSum[s+3])/(4*seg));
+    const L = z => -0.691 + 10*Math.log10(z);
+    const abs = blocks.filter(z => z>0 && L(z) > -70);
+    if (!abs.length) return null;
+    const rel = L(abs.reduce((a,b)=>a+b,0)/abs.length) - 10;
+    const gated = abs.filter(z => L(z) > rel);
+    return L(gated.reduce((a,b)=>a+b,0)/gated.length);
+  }
+
+  // ---------- Crossfade
+  let curve = 'linear', matchOn = true, syncOn = true, outGain = null;
+  const CEIL = -1; // dBFS: höchster erlaubter Spitzenpegel nach dem Angleichen
+  const gainsFor = v => curve === 'linear' ? [1-v, v] : [Math.cos(v*Math.PI/2), Math.sin(v*Math.PI/2)];
+  function applyGains(instant){
+    const [ga, gb] = gainsFor(x);
+    // Buchstaben leuchten mit dem Anteil
+    $('letA').style.color = mixColor(1-x); $('letB').style.color = mixColor(x);
+    $('xf').setAttribute('aria-valuetext', `A ${Math.round((1-x)*100)} Prozent, B ${Math.round(x*100)} Prozent`);
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    for (const [k,g] of [['A',ga],['B',gb]]){
+      const p = T[k].gain.gain;
+      p.cancelScheduledValues(now);
+      if (instant) p.setValueAtTime(g, now); else p.setTargetAtTime(g, now, 0.012);
+    }
+  }
+  function mixColor(share){ // #444 → #fff
+    const v = Math.round(0x44 + (0xff-0x44)*share);
+    return `rgb(${v},${v},${v})`;
+  }
+  function setX(v, fromUser){
+    x = Math.min(1, Math.max(0, v));
+    $('xf').value = Math.round(x*1000);
+    if (fromUser && fadeAnim){ cancelAnimationFrame(fadeAnim); fadeAnim = null; }
+    applyGains(false);
+  }
+  function fadeTo(target){
+    if (fadeAnim){ cancelAnimationFrame(fadeAnim); fadeAnim = null; }
+    const from = x, dur = FADE*Math.abs(target-from);
+    if (dur <= 0){ setX(target); return; }
+    const t0 = performance.now();
+    const step = now => {
+      const p = Math.min(1,(now-t0)/(dur*1000));
+      setX(from + (target-from)*p);
+      fadeAnim = p<1 ? requestAnimationFrame(step) : null;
+    };
+    fadeAnim = requestAnimationFrame(step);
+  }
+
+  // ---------- Angleichen
+  function trimFor(k){
+    if (!matchOn) return 0;
+    const la = T.A.lufs, lb = T.B.lufs;
+    if (la == null || lb == null) return 0;
+    return k === 'A' ? lb - la : 0;            // B (Endmix) bleibt unangetastet, A wird auf B gebracht
+  }
+  const dec = v => v.toFixed(1).replace('.', ',');
+  const sgn = v => (v < 0 ? '−' : '+') + dec(Math.abs(v));
+  function headroomDb(){ // um so viel wird die ganze Wiedergabe leiser, damit A nach dem Anheben nicht übersteuert
+    let over = 0;
+    for (const k of ['A','B']){
+      const t = T[k]; if (!t.buf || t.peakDb == null) continue;
+      over = Math.max(over, t.peakDb + trimFor(k) - CEIL);
+    }
+    return over;
+  }
+  function applyTrims(){
+    const hr = headroomDb();
+    if (ctx && outGain){ const now = ctx.currentTime; outGain.gain.cancelScheduledValues(now); outGain.gain.setTargetAtTime(Math.pow(10, -hr/20), now, 0.03); }
+    $('match').title = hr >= 0.05 ? `Wiedergabe gesamt ${sgn(-hr)} dB, damit A nach dem Anheben nicht übersteuert. Beide Spuren gleich betroffen.` : '';
+    for (const k of ['A','B']){
+      const t = T[k], db = trimFor(k);
+      if (ctx && t.trim){
+        const now = ctx.currentTime;
+        t.trim.gain.cancelScheduledValues(now);
+        t.trim.gain.setTargetAtTime(Math.pow(10, db/20), now, 0.03);
+      }
+      const el = $('lufs'+k);
+      if (!t.buf){ el.textContent = ''; continue; }
+      if (t.lufs == null){ el.textContent = t.analysing ? 'Messe Lautheit…' : 'Lautheit nicht messbar'; continue; }
+      const base = `${sgn(t.lufs).replace('+','')} LUFS`;
+      const ms = Math.round((t.off||0)*1000);
+      el.innerHTML = (Math.abs(db) >= 0.05 ? `${base} · <span class="adj">${sgn(db)} dB</span>` : base) + (ms ? ` · <span class="adj">${ms>0?'+':'−'}${Math.abs(ms)} ms</span>` : '');
+    }
+    updateFinding();
+  }
+  function updateFinding(){
+    const f = $('finding');
+    const have = [vid.src && 'Video', T.A.buf && 'A', T.B.buf && 'B'].filter(Boolean);
+    if (have.length < 3){
+      const miss = ['Video','A','B'].filter(n => !have.includes(n)).map(n => n==='Video'?'das Video':'Tonspur '+n);
+      f.textContent = have.length ? `Es fehlt noch ${miss.join(' und ')}.` : 'Ein Video und zwei Tonspuren laden, dann während der Wiedergabe zwischen A und B blenden.';
+      return;
+    }
+    const la = T.A.lufs, lb = T.B.lufs;
+    if (la == null || lb == null){ f.textContent = 'Bereit. Lautheit wird gemessen…'; return; }
+    const d = Math.abs(la - lb), louder = la > lb ? 'A' : 'B';
+    if (d < 0.1) f.textContent = 'Bereit. Beide Spuren sind gleich laut.';
+    else if (matchOn) f.innerHTML = `Bereit. A wird um ${dec(lb-la)} dB auf die Lautheit des Endmixes B gebracht.`;
+    else f.innerHTML = `Bereit. <b>${louder} ist ${dec(d)} dB lauter.</b> Angleichen ist ausgeschaltet.`;
+  }
+
+  // ---------- Wiedergabe: Das Video ist die Uhr, beide Spuren starten sample-genau zusammen
+  function stopSources(when){ for (const k of ['A','B']){ const s=T[k].src; if (s){ try{s.stop(when);}catch(e){} T[k].src=null; } } }
+  function startSources(vt){
+    if (!ctx) return;
+    const now = ctx.currentTime, had = T.A.src || T.B.src, lead = had ? 0.03 : 0, when = now + lead;
+    if (had){
+      master.gain.cancelScheduledValues(now); master.gain.setValueAtTime(master.gain.value, now);
+      master.gain.linearRampToValueAtTime(0, when); stopSources(when);
+    }
+    const rate = vid.playbackRate || 1;
+    for (const k of ['A','B']){
+      const t = T[k]; if (!t.buf) continue;
+      const s = ctx.createBufferSource(); s.buffer = t.buf; s.playbackRate.value = rate; s.connect(t.trim);
+      const off = vt + lead*rate + (t.off || 0);
+      if (off < 0) s.start(when + (-off)/rate, 0);
+      else if (off < t.buf.duration) s.start(when, off);
+      else continue;
+      t.src = s;
+    }
+    if (had) master.gain.linearRampToValueAtTime(1, when + 0.02);
+    else { master.gain.cancelScheduledValues(now); master.gain.setValueAtTime(1, now); }
+    anchor = { ctx: when, vid: vt + lead*rate };
+  }
+  function halt(){
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    master.gain.cancelScheduledValues(now); master.gain.setValueAtTime(master.gain.value, now);
+    master.gain.linearRampToValueAtTime(0, now+0.015); stopSources(now+0.02); anchor = null;
+  }
+  function setPlayIcon(){ const p = !vid.paused; $('play').classList.toggle('playing', p); $('play').setAttribute('aria-label', p ? 'Pause' : 'Abspielen'); }
+  vid.addEventListener('play', async () => { setPlayIcon(); getCtx(); await ctx.resume(); if (!vid.paused) startSources(vid.currentTime); });
+  vid.addEventListener('pause', () => { halt(); setPlayIcon(); });
+  vid.addEventListener('seeking', () => { if (!vid.paused) halt(); });
+  vid.addEventListener('seeked', () => { if (!vid.paused) startSources(vid.currentTime); });
+  vid.addEventListener('ratechange', () => { if (!vid.paused) startSources(vid.currentTime); });
+  vid.addEventListener('ended', () => { halt(); setPlayIcon(); });
+  function showVidMsg(html){ $('vmsgTxt').innerHTML = html; $('vmsg').hidden = false; }
+  const NO_PLAY = '<b>Dieses Video kann hier nicht abgespielt werden.</b><br>Am sichersten funktioniert ein H.264-MP4.';
+  const toggle = () => {
+    if (!vid.src) return;
+    if (vid.paused){
+      $('play').classList.add('playing');      // sofort Pause zeigen
+      const pr = vid.play();
+      if (pr && pr.catch) pr.catch(err => { setPlayIcon(); if (err.name !== 'AbortError') showVidMsg(NO_PLAY); });
+    } else vid.pause();
+  };
+  vid.addEventListener('error', () => { setPlayIcon(); showVidMsg(NO_PLAY); });
+  $('play').addEventListener('click', toggle);
+  vid.addEventListener('click', toggle);
+  vid.addEventListener('dblclick', () => fullscreen());
+  function fullscreen(){
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else (stage.requestFullscreen?.() || Promise.resolve()).catch(()=>{});
+  }
+  $('fs').addEventListener('click', fullscreen);
+  let idleT = 0;
+  function wake(){ stage.classList.remove('idle'); clearTimeout(idleT); if (!vid.paused) idleT = setTimeout(() => stage.classList.add('idle'), 2200); }
+  stage.addEventListener('mousemove', wake); stage.addEventListener('mouseleave', () => { if (!vid.paused) stage.classList.add('idle'); });
+  vid.addEventListener('play', wake); vid.addEventListener('pause', wake);
+  stage.addEventListener('focusin', wake);
+
+  // ---------- Zeitleiste mit beiden Wellenformen
+  const wave = $('wave');
+  const timelineDur = () => (isFinite(vid.duration) && vid.duration) || Math.max(T.A.buf?.duration||0, T.B.buf?.duration||0);
+  function computePeaks(){}
+  function drawWave(){
+    const D = timelineDur(), prog = D ? Math.min(1,(vid.currentTime||0)/D) : 0;
+    $('progFill').style.width = (prog*100) + '%';
+    $('progDot').style.left = (prog*100) + '%';
+  }
+  function seekAt(clientX){
+    const D = timelineDur(); if (!D || !vid.src) return;
+    const r = wave.getBoundingClientRect();
+    vid.currentTime = Math.min(1,Math.max(0,(clientX-r.left)/r.width)) * D;
+  }
+  let dragging = false;
+  wave.addEventListener('pointerdown', e => { dragging = true; wave.setPointerCapture(e.pointerId); seekAt(e.clientX); });
+  wave.addEventListener('pointermove', e => { if (dragging) seekAt(e.clientX); });
+  wave.addEventListener('pointerup', () => dragging = false);
+  wave.addEventListener('keydown', e => {
+    if (!vid.src) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight'){
+      e.preventDefault(); e.stopPropagation();
+      vid.currentTime = Math.max(0, Math.min(timelineDur(), vid.currentTime + (e.key==='ArrowRight'?5:-5)));
+    }
+  });
+
+  // ---------- Schleife: Drift und Zeit
+  const fmt = s => { s=Math.max(0,s||0); const h=Math.floor(s/3600), m=Math.floor(s/60)%60, ss=Math.floor(s)%60, cs=Math.floor((s%1)*100);
+    return [h,m,ss].map(n=>String(n).padStart(2,'0')).join(':')+'.'+String(cs).padStart(2,'0'); };
+  let lastResync = 0;
+  function tick(){
+    $('tc').textContent = fmt(vid.currentTime);
+    wave.setAttribute('aria-valuenow', Math.round(vid.currentTime||0));
+    if (ctx && anchor && !vid.paused && !vid.seeking){
+      const expected = anchor.vid + (ctx.currentTime-anchor.ctx)*(vid.playbackRate||1);
+      if (Math.abs(vid.currentTime-expected) > 0.12 && performance.now()-lastResync > 1000 && ctx.currentTime > anchor.ctx){
+        lastResync = performance.now(); startSources(vid.currentTime);
+      }
+    }
+    drawWave();
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // ---------- Dateien
+  function checkLengths(){
+    for (const k of ['A','B']){
+      const t = T[k], w = $('w'+k);
+      w.hidden = true;
+      if (t.buf && isFinite(vid.duration) && vid.duration){
+        const d = t.buf.duration - vid.duration;
+        if (Math.abs(d) > 0.5){ w.textContent = `${Math.abs(d).toFixed(1).replace('.',',')} s ${d>0?'länger':'kürzer'} als das Bild`; w.hidden = false; }
+      }
+    }
+  }
+  function refreshAll(){ computePeaks('A'); computePeaks('B'); checkLengths(); applyTrims(); }
+  function loadVideo(file){
+    if (!file) return;
+    if (vid.src) URL.revokeObjectURL(vid.src);
+    $('vmsg').hidden = true;
+    vid.src = URL.createObjectURL(file); videoFile = file; refBuf = undefined;
+    vid.hidden = false; $('empty').hidden = true; $('controls').hidden = false;
+    $('loadTxtV').textContent = 'Video ersetzen'; $('loadV').classList.add('has');
+    $('title').textContent = file.name.replace(/\.[^.]+$/, '');
+    vid.addEventListener('loadedmetadata', () => {
+      if (!vid.videoWidth) showVidMsg('<b>Kein Bild:</b> Dieses Video ist vermutlich ProRes oder DNxHD. Das kann der Browser nicht darstellen. Bitte als H.264-MP4 exportieren.');
+      $('dur').textContent = fmt(vid.duration); wave.setAttribute('aria-valuemax', Math.round(vid.duration)); refreshAll(); if (T.A.buf && T.B.buf) doSync(); }, {once:true});
+    getCtx(); updateFinding(); updateShareVis && updateShareVis();
+  }
+  async function loadAudio(k, file){
+    if (!file) return;
+    getCtx();
+    const t = T[k];
+    $('name'+k).textContent = 'Lade…'; $('name'+k).hidden = false;
+    try{
+      const ab = await file.arrayBuffer();
+      const buf = await new Promise((res,rej) => { const p = ctx.decodeAudioData(ab,res,rej); if (p && p.catch) p.catch(rej); });
+      t.buf = buf; t.file = file; t.name = file.name; t.lufs = null; t.analysing = true; t.off = 0;
+      $('name'+k).textContent = file.name;
+      $('loadTxt'+k).textContent = `${k} ersetzen`; $('load'+k).classList.add('has');
+      refreshAll();
+      if (!vid.paused) startSources(vid.currentTime);
+      updateShareVis();
+      setTimeout(() => { t.peakDb = peakDb(buf); t.lufs = integratedLoudness(buf); t.analysing = false; applyTrims(); autoCurve(); if (T.A.buf && T.B.buf) doSync(); }, 30);
+    }catch(e){
+      t.buf = null;
+      $('name'+k).textContent = ''; $('name'+k).hidden = true;
+      const w = $('w'+k); w.textContent = 'Datei nicht lesbar. WAV, AIFF, MP3 oder AAC verwenden.'; w.hidden = false;
+      updateFinding();
+    }
+  }
+  const VIDEO_EXT = /\.(mp4|mov|m4v|webm|mkv|mxf|avi|mpg|mpeg|m2v|mts|m2ts|ts|wmv|3gp|ogv)$/i;
+  const isVideo = f => f.type.startsWith('video/') || VIDEO_EXT.test(f.name);
+  function routeFiles(files){
+    files = [...files];
+    const v = files.find(isVideo);
+    const audios = files.filter(f => f !== v).sort((a,b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+    if (v) loadVideo(v);
+    if (audios.length >= 2){ loadAudio('A', audios[0]); loadAudio('B', audios[1]); }
+    else if (audios.length === 1) loadAudio(!T.A.buf ? 'A' : !T.B.buf ? 'B' : 'B', audios[0]);
+  }
+  $('empty').addEventListener('click', () => $('fileAll').click());
+  $('empty').addEventListener('keydown', e => { if (e.key==='Enter'||e.key===' '){ e.preventDefault(); $('fileAll').click(); } });
+  $('fileAll').addEventListener('change', e => { routeFiles(e.target.files); e.target.value=''; });
+  $('loadV').addEventListener('click', () => $('fileV').click());
+  $('fileV').addEventListener('change', e => { loadVideo(e.target.files[0]); e.target.value=''; });
+  for (const k of ['A','B']){
+    const inp = $('file'+k);
+    $('load'+k).addEventListener('click', () => inp.click());
+    $('let'+k).addEventListener('click', () => fadeTo(k==='A' ? 0 : 1));
+    inp.addEventListener('click', e => e.stopPropagation());
+    inp.addEventListener('change', e => { loadAudio(k, e.target.files[0]); e.target.value=''; });
+  }
+  // Ziehen: Das Bild teilt sich, links A, rechts B. Ein Video landet immer im Bild.
+  const split = $('split');
+  let depth = 0, side = 'A';
+  const isFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
+  function pickSide(e){
+    const r = stage.getBoundingClientRect();
+    side = e.clientX < r.left + r.width/2 ? 'A' : 'B';
+    $('halfA').classList.toggle('on', side === 'A'); $('halfB').classList.toggle('on', side === 'B');
+  }
+  window.addEventListener('dragenter', e => { if (!isFiles(e)) return; depth++; split.hidden = false; });
+  const dragHasVideo = e => [...(e.dataTransfer?.items || [])].some(it => it.kind === 'file' && it.type.startsWith('video/'));
+  window.addEventListener('dragover', e => { e.preventDefault(); if (isFiles(e)){ split.hidden = false; split.classList.toggle('vid', dragHasVideo(e)); pickSide(e); } });
+  window.addEventListener('dragleave', () => { depth = Math.max(0, depth-1); if (!depth) split.hidden = true; });
+  window.addEventListener('drop', e => {
+    e.preventDefault(); depth = 0; split.hidden = true;
+    const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
+    split.classList.remove('vid');
+    if (files.length === 1 && !isVideo(files[0])) loadAudio(side, files[0]);
+    else routeFiles(files);   // ein Video landet immer im Bild, Tonspuren werden zugeordnet
+  });
+
+
+  // ---------- Synchronisieren: Kreuzkorrelation, grob über Einsätze (10 ms), fein auf Samples (8 kHz)
+  let videoFile = null, refBuf;
+  function mono(buf, maxSec){
+    const n = Math.min(buf.length, Math.floor(maxSec*buf.sampleRate)), out = new Float32Array(n), nch = buf.numberOfChannels;
+    for (let c=0;c<nch;c++){ const ch = buf.getChannelData(c); for (let i=0;i<n;i++) out[i] += ch[i]/nch; }
+    return out;
+  }
+  function decimate(x, fsIn, fsOut){
+    const r = fsIn/fsOut, n = Math.floor(x.length/r), y = new Float32Array(n);
+    for (let i=0;i<n;i++){ const a=Math.floor(i*r), b=Math.max(a+1,Math.floor((i+1)*r)); let s=0; for (let j=a;j<b;j++) s+=x[j]; y[i]=s/(b-a); }
+    return y;
+  }
+  function onsets(x, fs){ // positive Änderung der Log-Energie pro 10 ms
+    const hop = Math.round(fs/100), n = Math.floor(x.length/hop), e = new Float32Array(n);
+    let prev = 0;
+    for (let f=0;f<n;f++){ let s=0; const o=f*hop; for (let i=0;i<hop;i++){ const v=x[o+i]; s+=v*v; } const l=Math.log(1e-9+s/hop); e[f]=Math.max(0,l-prev); prev=l; }
+    let m=0; for (const v of e) m+=v; m/=n||1; for (let i=0;i<n;i++) e[i]-=m;
+    return e;
+  }
+  function fft(re, im, inv){
+    const n = re.length;
+    for (let i=1,j=0;i<n;i++){ let bit=n>>1; for (;j&bit;bit>>=1) j^=bit; j^=bit; if (i<j){ [re[i],re[j]]=[re[j],re[i]]; [im[i],im[j]]=[im[j],im[i]]; } }
+    for (let len=2;len<=n;len<<=1){
+      const ang = 2*Math.PI/len*(inv?1:-1), wr=Math.cos(ang), wi=Math.sin(ang);
+      for (let i=0;i<n;i+=len){ let cr=1, ci=0;
+        for (let k=0;k<len/2;k++){
+          const a=i+k, b=a+len/2, tr=re[b]*cr-im[b]*ci, ti=re[b]*ci+im[b]*cr;
+          re[b]=re[a]-tr; im[b]=im[a]-ti; re[a]+=tr; im[a]+=ti;
+          const ncr=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=ncr;
+        } }
+    }
+    if (inv) for (let i=0;i<n;i++){ re[i]/=n; im[i]/=n; }
+  }
+  function xcorr(a, b, maxLag){ // c[L] = Σ a[n]·b[n+L]
+    let N=1; while (N < a.length+b.length) N<<=1;
+    const ar=new Float64Array(N), ai=new Float64Array(N), br=new Float64Array(N), bi=new Float64Array(N);
+    ar.set(a); br.set(b); fft(ar,ai); fft(br,bi);
+    for (let i=0;i<N;i++){ const r=ar[i]*br[i]+ai[i]*bi[i], im=ar[i]*bi[i]-ai[i]*br[i]; ar[i]=r; ai[i]=im; }
+    fft(ar,ai,true);
+    let best=-Infinity, L=0;
+    for (let l=-maxLag;l<=maxLag;l++){ const v = ar[(l+N)%N]; if (v>best){ best=v; L=l; } }
+    let second=-Infinity;
+    for (let l=-maxLag;l<=maxLag;l++){ if (Math.abs(l-L) < 8) continue; const v = ar[(l+N)%N]; if (v>second) second=v; }
+    return { lag:L, ratio: second>0 ? best/second : Infinity, ok: best>0 };
+  }
+  function fine(a8, b8, coarse, fs){ // ±25 ms um die grobe Lage, normierte Korrelation
+    const W = Math.min(8*fs, a8.length), span = Math.round(0.025*fs);
+    let s0 = Math.max(0, Math.floor(a8.length/2 - W/2));
+    let best=-Infinity, L=coarse, ea=0;
+    for (let i=0;i<W;i++){ const v=a8[s0+i]||0; ea+=v*v; }
+    for (let l=coarse-span; l<=coarse+span; l++){
+      let c=0, eb=0;
+      for (let i=0;i<W;i++){ const j=s0+i+l; const bv = (j>=0 && j<b8.length) ? b8[j] : 0; c += (a8[s0+i]||0)*bv; eb += bv*bv; }
+      const n = c/Math.sqrt(ea*eb||1);
+      if (n>best){ best=n; L=l; }
+    }
+    return { lag:L, corr:best };
+  }
+  function align(refB, trkB){ // Sekunden, um die die Spur später liegt als die Referenz
+    const MAX = 90, fs8 = 8000;
+    const ra = mono(refB, MAX), rb = mono(trkB, MAX);
+    const ca = onsets(ra, refB.sampleRate), cb = onsets(rb, trkB.sampleRate);
+    const co = xcorr(ca, cb, Math.min(1000, Math.max(ca.length, cb.length)));
+    const a8 = decimate(ra, refB.sampleRate, fs8), b8 = decimate(rb, trkB.sampleRate, fs8);
+    const f = fine(a8, b8, co.lag*80, fs8);
+    return { sec: f.lag/fs8, corr: f.corr, sure: co.ok && co.ratio > 1.2 };
+  }
+  function autoCurve(){
+    if (!T.A.buf || !T.B.buf) return;
+    try { const r = align(T.A.buf, T.B.buf); curve = r.corr > 0.5 ? 'linear' : 'power'; applyGains(false); } catch(e){}
+  }
+  async function decodeRef(){
+    if (refBuf !== undefined) return refBuf;
+    refBuf = null;
+    if (!videoFile) return null;
+    try{
+      const ab = await videoFile.arrayBuffer();
+      const b = await new Promise((res,rej) => { const p = ctx.decodeAudioData(ab,res,rej); if (p && p.catch) p.catch(rej); });
+      const m = mono(b, 30); let e=0; for (const v of m) e+=v*v;
+      if (e/m.length > 1e-7) refBuf = b;
+    }catch(e){}
+    return refBuf;
+  }
+  const msTxt = s => { const ms = Math.round(s*1000); return ms === 0 ? 'deckungsgleich' : `${Math.abs(ms)} ms ${ms>0?'später':'früher'}`; };
+  async function doSync(){
+    if (!T.A.buf || !T.B.buf) return;
+    if (!syncOn) return;
+    $('sync').classList.add('busy'); $('sync').classList.remove('unsure');
+    T.A.off = 0; T.B.off = 0;
+    await new Promise(r => setTimeout(r, 30));
+    try{
+      getCtx();
+      const ref = await decodeRef();
+      const ab = align(T.A.buf, T.B.buf);
+      curve = ab.corr > 0.5 ? 'linear' : 'power'; applyGains(false);
+      let msg;
+      let unsure;
+      if (ref){
+        const ra = align(ref, T.A.buf), rb = align(ref, T.B.buf);
+        if (ra.sure) T.A.off = ra.sec;
+        if (rb.sure) T.B.off = rb.sec;
+        if (ra.sure && !rb.sure && ab.sure) T.B.off = T.A.off + ab.sec;
+        if (!ra.sure && rb.sure && ab.sure) T.A.off = T.B.off - ab.sec;
+        if (!ra.sure && !rb.sure && ab.sure) T.B.off = ab.sec;
+        unsure = !((ra.sure || ab.sure) && (rb.sure || ab.sure));
+        msg = unsure ? 'Keine eindeutige Übereinstimmung gefunden.' : 'Synchronisiert.';
+      } else {
+        if (ab.sure) T.B.off = ab.sec;
+        unsure = !ab.sure;
+        msg = unsure ? 'Keine eindeutige Übereinstimmung gefunden.' : 'Synchronisiert.';
+      }
+      $('sync').classList.toggle('unsure', unsure);
+      $('sync').title = unsure ? 'Keine eindeutige Übereinstimmung gefunden. Nichts verschoben.' : '';
+      $('syncMsg').textContent = msg;
+      computePeaks('A'); computePeaks('B'); applyTrims();
+      if (!vid.paused) startSources(vid.currentTime);
+    }catch(e){ $('syncMsg').textContent = 'Synchronisieren hat nicht geklappt.'; }
+    $('sync').classList.remove('busy');
+  }
+
+
+  // ---------- Teilen: Dateien unverändert als Base64-Stücke im Artifact ablegen, Link = Artifact-Link + #Manifest-ID
+  const ARTIFACT_URL = 'https://claude.ai/artifact/WMimuwEaH7TEoBiycoEDDA';
+  const CHUNK = 14 * 1024 * 1024;          // 14 MiB roh → ~18,7 MiB Base64, unter der 20-MiB-Grenze
+  let assetsApi = null, lastShare = null;
+  const shareKey = () => [videoFile, T.A.file, T.B.file].map(f => f ? `${f.name}|${f.size}|${f.lastModified}` : '-').join('/');
+  function updateShareVis(){
+    const ready = !!(assetsApi && videoFile && T.A.file && T.B.file);
+    $('share').hidden = !ready;
+  }
+  const b64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+  async function uploadFile(file, onBytes){
+    const ids = [];
+    for (let o = 0; o < file.size; o += CHUNK){
+      const part = file.slice(o, Math.min(file.size, o + CHUNK));
+      const text = await b64(part);
+      let res;
+      try { res = await assetsApi.upload(new Blob([text], {type:'text/plain'}), {type:'text/plain'}); }
+      catch(e){ if (e && e.code === 'store_unavailable'){ await new Promise(r => setTimeout(r, 1500)); res = await assetsApi.upload(new Blob([text], {type:'text/plain'}), {type:'text/plain'}); } else throw e; }
+      ids.push(res.id); onBytes(part.size);
+    }
+    return ids;
+  }
+  const typeOf = (f, fallback) => f.type || fallback;
+  async function doShare(){
+    if (!assetsApi || !videoFile || !T.A.file || !T.B.file) return;
+    if (lastShare && lastShare.key === shareKey()){ showShare(lastShare.url); return; }
+    const btn = $('share'); btn.disabled = true;
+    const files = [videoFile, T.A.file, T.B.file], total = files.reduce((a,f) => a + f.size, 0);
+    let done = 0; const tick = n => { done += n; $('shareTxt').textContent = `Lade hoch … ${Math.round(done/total*100)} %`; };
+    $('shareTxt').textContent = 'Lade hoch … 0 %';
+    try{
+      const manifest = { v:1,
+        video:{ type: typeOf(videoFile, 'video/mp4'), size: videoFile.size, chunks: await uploadFile(videoFile, tick) },
+        A:{ type: typeOf(T.A.file, 'audio/wav'), size: T.A.file.size, chunks: await uploadFile(T.A.file, tick) },
+        B:{ type: typeOf(T.B.file, 'audio/wav'), size: T.B.file.size, chunks: await uploadFile(T.B.file, tick) } };
+      const m = await assetsApi.upload(new Blob([JSON.stringify(manifest)], {type:'application/json'}), {type:'application/json'});
+      const url = `${ARTIFACT_URL}#${m.id}`;
+      lastShare = { key: shareKey(), url };
+      showShare(url);
+      $('shareTxt').textContent = 'Teilen';
+    }catch(e){
+      const code = e && e.code;
+      $('shareTxt').textContent = code === 'quota_or_state' ? 'Speicher voll' : code === 'rate_limited' ? 'Zu schnell, später nochmals' : 'Hochladen fehlgeschlagen';
+      setTimeout(() => { $('shareTxt').textContent = 'Teilen'; }, 4000);
+    }
+    btn.disabled = false;
+  }
+  function showShare(url){ $('shareUrl').value = url; $('sharebox').hidden = false; $('shareUrl').select(); }
+  $('share').addEventListener('click', doShare);
+  $('closeShare').addEventListener('click', () => { $('sharebox').hidden = true; });
+  $('copyShare').addEventListener('click', () => {
+    const v = $('shareUrl').value;
+    const ok = () => { $('copyShare').textContent = 'Kopiert'; setTimeout(() => $('copyShare').textContent = 'Kopieren', 1800); };
+    const fallback = () => { $('shareUrl').focus(); $('shareUrl').select(); try { document.execCommand('copy') && ok(); } catch(e){} };
+    try { navigator.clipboard.writeText(v).then(ok, fallback); } catch(e){ fallback(); }
+  });
+  // Kundenansicht: Im Claude-Viewer ohne Bearbeitungsrecht gibt es keine Laden-Knöpfe (in der Mac-App gibt es kein window.claude, dort bleiben sie)
+  if (window.claude && window.claude.use) stage.classList.add('client');
+  (async () => { try { if (window.claude && window.claude.use) assetsApi = await window.claude.use('assets'); } catch(e){} if (assetsApi) stage.classList.remove('client'); updateShareVis(); })();
+
+  // ---------- Geteiltes Projekt öffnen
+  function fromB64(text){ const bin = atob(text.trim()); const u = new Uint8Array(bin.length); for (let i=0;i<bin.length;i++) u[i] = bin.charCodeAt(i); return u; }
+  async function fetchFile(entry, name, onBytes){
+    const parts = [];
+    for (const id of entry.chunks){
+      const r = await fetch('/_blob/' + id); if (!r.ok) throw new Error('missing');
+      const u = fromB64(await r.text()); parts.push(u); onBytes(u.length);
+    }
+    return new File(parts, name, { type: entry.type });
+  }
+  async function openShared(id){
+    stage.classList.add('shared');
+    const msg = t => { $('empty').querySelector('p').textContent = t; };
+    msg('Projekt wird geladen …');
+    try{
+      const r = await fetch('/_blob/' + id); if (!r.ok) throw new Error('missing');
+      const m = await r.json();
+      const total = m.video.size + m.A.size + m.B.size; let done = 0;
+      const tick = n => { done += n; msg(`Projekt wird geladen … ${Math.round(done/total*100)} %`); };
+      const [v, a, b] = await Promise.all([fetchFile(m.video, 'Video', tick), fetchFile(m.A, 'A', tick), fetchFile(m.B, 'B', tick)]);
+      loadVideo(v); loadAudio('A', a); loadAudio('B', b);
+    }catch(e){
+      stage.classList.remove('shared');
+      msg('Dieses Projekt ist nicht mehr verfügbar oder der Link ist unvollständig.');
+    }
+  }
+  const sharedId = (location.hash || '').slice(1);
+  if (/^[0-9a-f]{32}$/i.test(sharedId)) openShared(sharedId);
+
+  // ---------- Bedienung
+  // Fader: frei ziehen, beim Loslassen rastet er an der näheren Seite ein. Die Mitte ist nur Übergang.
+  let restEnd = 0;
+  const snap = () => { restEnd = x < 0.5 ? 0 : x > 0.5 ? 1 : restEnd; fadeTo(restEnd); };
+  $('xf').addEventListener('input', e => setX(e.target.value/1000, true));
+  $('xf').addEventListener('change', snap);
+  $('xf').addEventListener('keydown', e => {
+    const k = e.key;
+    if (['ArrowLeft','ArrowDown','Home','PageDown'].includes(k)){ e.preventDefault(); e.stopPropagation(); restEnd = 0; fadeTo(0); }
+    else if (['ArrowRight','ArrowUp','End','PageUp'].includes(k)){ e.preventDefault(); e.stopPropagation(); restEnd = 1; fadeTo(1); }
+  });
+  $('info').addEventListener('click', () => { const on = $('info').getAttribute('aria-pressed') !== 'true'; $('info').setAttribute('aria-pressed', on); document.querySelector('.mix').classList.toggle('show-info', on); });
+  $('match').addEventListener('click', () => { matchOn = !matchOn; $('match').setAttribute('aria-pressed', matchOn); applyTrims(); });
+  $('sync').addEventListener('click', () => {
+    syncOn = !syncOn; $('sync').setAttribute('aria-pressed', syncOn);
+    if (syncOn) doSync();
+    else { T.A.off = 0; T.B.off = 0; $('sync').classList.remove('unsure'); $('sync').title = ''; applyTrims(); if (!vid.paused) startSources(vid.currentTime); }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.target.matches('input[type=number], select, input[type=text]')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const key = e.key.toLowerCase();
+    if (key === ' ' && !e.target.matches('button, [role=button], summary')){ e.preventDefault(); toggle(); }
+    else if (key === 'a') fadeTo(0);
+    else if (key === 'b') fadeTo(1);
+    else if (key === 'x') fadeTo(x < 0.5 ? 1 : 0);
+    else if (key === 'f') fullscreen();
+    else if ((key === 'arrowleft' || key === 'arrowright') && !e.target.matches('input[type=range]') && e.target !== wave){
+      e.preventDefault(); restEnd = key==='arrowright' ? 1 : 0; fadeTo(restEnd);
+    }
+  });
+  window.addEventListener('resize', drawWave);
+  applyGains(true);
+  window.__cf = { T, integratedLoudness, trimFor, headroomDb, get out(){ return outGain && outGain.gain.value; }, align, get curve(){ return curve; } }; // für Tests
+})();
+</script>
+
+</body></html>
